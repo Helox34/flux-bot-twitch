@@ -2,235 +2,212 @@ import socket
 import threading
 import time
 import numpy as np
-import sys
 import subprocess
 import streamlink
 import os
 import datetime
+import sys
 
 # --- KONFIGURACJA ---
 NICKNAME = 'justinfan12345'
-# CHANNEL - o to zapyta program przy starcie
 
-# --- PROGI I USTAWIENIA ---
-CHAT_THRESHOLD = 3.0       # Msg/s
-AUDIO_THRESHOLD = 2000     # Audio RMS
-RECORD_DURATION = 30       # Długość klipu w sekundach
-COOLDOWN_TIME = 60         # Ile sekund przerwy po nagraniu klipu?
+class FluxEngine:
+    def __init__(self):
+        self.is_running = False
+        self.target_channel = ""
+        
+        # Callbacki do komunikacji z GUI
+        self.log_callback = None
+        self.stats_callback = None
+        
+        # Wątki
+        self.chat_thread = None
+        self.audio_thread = None
+        self.main_loop_thread = None
 
-# Zmienne globalne
-current_chat_velocity = 0.0
-current_audio_level = 0.0
-is_stream_live = False
-last_clip_time = 0         # Kiedy ostatnio nagrywaliśmy?
+        # Zmienne stanu
+        self.current_chat_velocity = 0.0
+        self.current_audio_level = 0.0
+        self.is_stream_live = False
+        self.last_clip_time = 0
+        self.session_clips = []
+        
+        # Ustawienia domyślne (można sterować z GUI)
+        self.chat_threshold = 3.0
+        self.audio_threshold = 2000
+        self.cooldown_time = 60      # Czas przerwy między klipami
+        self.record_duration = 30    # Długość klipu w sekundach
 
-class ChatMonitor(threading.Thread):
-    def __init__(self, channel):
-        super().__init__()
-        self.channel = channel
-        self.messages_window = []
+    def log(self, message):
+        """Wysyła logi do GUI lub konsoli"""
+        if self.log_callback:
+            timestamp = datetime.datetime.now().strftime('%H:%M:%S')
+            self.log_callback(f"[{timestamp}] {message}\n")
+        else:
+            print(message)
 
-    def run(self):
-        global current_chat_velocity
+    def start(self, channel, log_cb, stats_cb):
+        """Startuje silnik"""
+        if self.is_running: return
+
+        self.target_channel = channel.lower().replace("twitch.tv/", "").replace("https://", "").strip()
+        self.log_callback = log_cb
+        self.stats_callback = stats_cb
+        self.is_running = True
+        self.session_clips = []
+        
+        self.main_loop_thread = threading.Thread(target=self._main_loop)
+        self.main_loop_thread.daemon = True
+        self.main_loop_thread.start()
+        
+        self.log(f"🟢 Flux Engine: Start dla kanału {self.target_channel}")
+
+    def stop(self):
+        """Zatrzymuje silnik"""
+        self.is_running = False
+        self.log("🛑 Zatrzymywanie procesów...")
+
+    # --- MONITORING CZATU (IRC) ---
+    def _monitor_chat(self):
         server = 'irc.chat.twitch.tv'
         sock = socket.socket()
+        messages_window = []
+        
         try:
             sock.connect((server, 6667))
             sock.send(f"NICK {NICKNAME}\n".encode('utf-8'))
-            sock.send(f"JOIN #{self.channel}\n".encode('utf-8'))
+            sock.send(f"JOIN #{self.target_channel}\n".encode('utf-8'))
+            sock.settimeout(2.0)
             
-            while True:
-                resp = sock.recv(2048).decode('utf-8', 'ignore')
-                if resp.startswith('PING'):
-                    sock.send("PONG\n".encode('utf-8'))
-                elif "PRIVMSG" in resp:
-                    now = time.time()
-                    self.messages_window.append(now)
-                    self.messages_window = [t for t in self.messages_window if now - t <= 10.0]
-                    if len(self.messages_window) > 0:
-                        current_chat_velocity = len(self.messages_window) / 10.0
-                    else:
-                        current_chat_velocity = 0
-        except:
-            pass
-
-class StreamAudioMonitor(threading.Thread):
-    def __init__(self, channel):
-        super().__init__()
-        self.channel = channel
-
-    def get_stream_url(self):
-        try:
-            streams = streamlink.streams(f"https://twitch.tv/{self.channel}")
-            if not streams: return None
-            return streams['audio_only'].url if 'audio_only' in streams else streams['best'].url
-        except:
-            return None
-
-    def run(self):
-        global current_audio_level, is_stream_live
-        
-        ffmpeg_cmd = "./ffmpeg.exe" if os.path.exists("ffmpeg.exe") else "ffmpeg"
-
-        while True:
-            stream_url = self.get_stream_url()
-            
-            if stream_url:
-                is_stream_live = True
-                
-                command = [
-                    ffmpeg_cmd, "-i", stream_url, "-f", "s16le", 
-                    "-ac", "1", "-ar", "16000", "-vn", "-"
-                ]
-                
+            while self.is_running:
                 try:
-                    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-                    while True:
-                        raw_audio = process.stdout.read(4096)
-                        if not raw_audio: break
-                        
-                        audio_data = np.frombuffer(raw_audio, dtype=np.int16)
-                        if len(audio_data) > 0:
-                            audio_data_safe = audio_data.astype(np.float64)
-                            rms = np.sqrt(np.mean(audio_data_safe**2))
-                            if not np.isnan(rms):
-                                current_audio_level = int(rms)
+                    resp = sock.recv(2048).decode('utf-8', 'ignore')
+                    if resp.startswith('PING'):
+                        sock.send("PONG\n".encode('utf-8'))
+                    elif "PRIVMSG" in resp:
+                        now = time.time()
+                        messages_window.append(now)
+                        messages_window = [t for t in messages_window if now - t <= 10.0]
+                        self.current_chat_velocity = len(messages_window) / 10.0 if messages_window else 0
+                except socket.timeout:
+                    continue
                 except:
-                    is_stream_live = False
-                    time.sleep(5)
-            else:
-                is_stream_live = False
-                current_audio_level = 0
-                time.sleep(10)
+                    pass
+        except Exception as e:
+            self.log(f"Błąd czatu: {e}")
+        finally:
+            sock.close()
 
-def record_clip(channel_name):
-    """Nagrywa klip i konwertuje na pion."""
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    filename_base = f"clip_{channel_name}_{timestamp}"
-    filename_mp4 = f"{filename_base}.mp4"
-    
-    # 1. Nagrywanie
-    cmd_record = [
-        "streamlink", f"twitch.tv/{channel_name}", "best", 
-        "-o", filename_mp4, "--force"
-    ]
-    
-    # Uruchamiamy nagrywanie w tle (nie blokujemy całego bota, ale czekamy na wynik)
-    # W wersji pro: używamy bufora, tu dla prostoty nagrywamy 30s OD MOMENTU wykrycia
-    proc = subprocess.Popen(cmd_record, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    time.sleep(RECORD_DURATION)
-    proc.terminate()
-    try:
-        proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        
-    # 2. Konwersja na pion (TikTok)
-    if os.path.exists(filename_mp4):
+    # --- MONITORING AUDIO (FFmpeg) ---
+    def _monitor_audio(self):
         ffmpeg_cmd = "./ffmpeg.exe" if os.path.exists("ffmpeg.exe") else "ffmpeg"
-        filename_vertical = f"{filename_base}_vertical.mp4"
         
-        cmd_convert = [
-            ffmpeg_cmd, "-i", filename_mp4, "-vf", "crop=ih*(9/16):ih", 
-            "-c:a", "copy", filename_vertical, "-y"
-        ]
-        subprocess.run(cmd_convert, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        
-        return filename_vertical, timestamp
-    return None, None
+        while self.is_running:
+            try:
+                streams = streamlink.streams(f"https://twitch.tv/{self.target_channel}")
+                if not streams:
+                    self.is_stream_live = False
+                    self.current_audio_level = 0
+                    time.sleep(5)
+                    continue
 
-def generate_summary(channel, session_clips):
-    """Tworzy plik tekstowy z podsumowaniem."""
-    if not session_clips:
-        return
-        
-    summary_filename = f"SUMMARY_{channel}_{datetime.datetime.now().strftime('%Y-%m-%d_%H-%M')}.txt"
-    
-    with open(summary_filename, "w", encoding="utf-8") as f:
-        f.write(f"RAPORT Z TRANSMISJI: {channel}\n")
-        f.write("="*30 + "\n")
-        f.write(f"Liczba nagranych klipów: {len(session_clips)}\n\n")
-        
-        for i, (clip_name, time_taken, trigger_type) in enumerate(session_clips):
-            f.write(f"{i+1}. [{time_taken}] - {trigger_type}\n")
-            f.write(f"   Plik: {clip_name}\n")
-            
-    print(f"\n📝 Wygenerowano podsumowanie: {summary_filename}")
-
-# --- START ---
-if __name__ == "__main__":
-    target = input("Podaj nick streamera: ").lower()
-    
-    t_chat = ChatMonitor(target)
-    t_chat.daemon = True
-    t_chat.start()
-    
-    t_audio = StreamAudioMonitor(target)
-    t_audio.daemon = True
-    t_audio.start()
-    
-    print(f"🤖 Flux v0.7: Uruchomiony dla {target}. Czekam na stream...")
-    
-    # Stan sesji
-    was_live_previously = False
-    session_clips = [] # Lista tupli: (nazwa_pliku, czas, powod)
-
-    try:
-        while True:
-            # 1. Obsługa końca streama (Online -> Offline)
-            if was_live_previously and not is_stream_live:
-                print(f"\n🏁 Stream {target} zakończony (lub przerwa).")
-                generate_summary(target, session_clips)
-                session_clips = [] # Resetujemy listę na następny stream
-                was_live_previously = False
-                print("💤 Przechodzę w stan czuwania...")
-
-            # 2. Obsługa początku streama (Offline -> Online)
-            if not was_live_previously and is_stream_live:
-                print(f"\n🟢 STREAM ONLINE! Rozpoczynam monitoring...")
-                was_live_previously = True
-
-            # 3. Główna pętla monitorująca (tylko gdy Online)
-            if is_stream_live:
-                status = "Monitorowanie..."
-                triggered = False
-                trigger_reason = ""
+                stream_url = streams['audio_only'].url if 'audio_only' in streams else streams['best'].url
+                self.is_stream_live = True
                 
-                # Sprawdzamy cooldowna
-                time_since_last = time.time() - last_clip_time
+                command = [ffmpeg_cmd, "-i", stream_url, "-f", "s16le", "-ac", "1", "-ar", "16000", "-vn", "-"]
+                process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
                 
-                if time_since_last > COOLDOWN_TIME:
-                    if current_chat_velocity > CHAT_THRESHOLD:
-                        triggered = True
-                        trigger_reason = f"CHAT SPAM ({current_chat_velocity:.1f} m/s)"
-                    elif current_audio_level > AUDIO_THRESHOLD:
-                        triggered = True
-                        trigger_reason = f"AUDIO SPIKE ({current_audio_level})"
-                
-                if triggered:
-                    print(f"\n🎬 WYKRYTO MOMENT: {trigger_reason} -> NAGRYWAM!")
-                    # Zatrzymujemy na chwilę wypisywanie statusu
-                    clip_name, clip_time = record_clip(target)
+                while self.is_running:
+                    raw_audio = process.stdout.read(4096)
+                    if not raw_audio: break
                     
-                    if clip_name:
-                        print(f"✅ Zapisano klip: {clip_name}")
-                        session_clips.append((clip_name, clip_time, trigger_reason))
-                        last_clip_time = time.time()
-                    else:
-                        print("❌ Błąd nagrywania.")
+                    audio_data = np.frombuffer(raw_audio, dtype=np.int16)
+                    if len(audio_data) > 0:
+                        audio_data_safe = audio_data.astype(np.float64)
+                        rms = np.sqrt(np.mean(audio_data_safe**2))
+                        if not np.isnan(rms):
+                            self.current_audio_level = int(rms)
+                
+                process.terminate()
+            except:
+                self.is_stream_live = False
+                time.sleep(5)
 
-                # Pasek statusu
-                sys.stdout.write(f"\r[{status}] Czat: {current_chat_velocity:.1f} | Audio: {current_audio_level} | Klipy w sesji: {len(session_clips)}   ")
-                sys.stdout.flush()
-            else:
-                # Tryb oszczędzania energii (gdy offline)
-                sys.stdout.write(f"\r💤 Czuwanie (Offline)... Sprawdzam za 10s...        ")
-                sys.stdout.flush()
-                time.sleep(10)
+    # --- NAGRYWANIE (Realne) ---
+    def _record_clip_process(self):
+        """Fizycznie pobiera stream na dysk (wersja pozioma)."""
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        filename = f"clip_{self.target_channel}_{timestamp}.mp4"
+        
+        cmd = [
+            "streamlink", 
+            f"twitch.tv/{self.target_channel}", 
+            "best", 
+            "-o", filename, 
+            "--force"
+        ]
+        
+        # Uruchamiamy proces nagrywania
+        process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        
+        # Nagrywamy przez zdefiniowany czas (np. 30s)
+        time.sleep(self.record_duration)
+        
+        # Kończymy proces
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            
+        return filename
 
-            time.sleep(0.2)
+    def _handle_recording(self, reason):
+        """Wątek wykonawczy nagrywania"""
+        self.log(f"🎥 Start nagrywania ({self.record_duration}s)... Powód: {reason}")
+        
+        filename = self._record_clip_process()
+        
+        if os.path.exists(filename):
+            self.log(f"✅ Zapisano klip: {filename}")
+            self.session_clips.append((filename, reason))
+        else:
+            self.log("❌ Błąd: Plik nie powstał (może brak streamu?).")
 
-    except KeyboardInterrupt:
-        if session_clips:
-            generate_summary(target, session_clips)
-        print("\n🛑 Flux zatrzymany.")
+    # --- PĘTLA GŁÓWNA ---
+    def _main_loop(self):
+        t1 = threading.Thread(target=self._monitor_chat); t1.daemon=True; t1.start()
+        t2 = threading.Thread(target=self._monitor_audio); t2.daemon=True; t2.start()
+
+        self.log("Systemy monitorowania aktywne.")
+
+        while self.is_running:
+            # 1. Update GUI
+            if self.stats_callback:
+                self.stats_callback(self.current_audio_level, self.current_chat_velocity, len(self.session_clips))
+
+            # 2. Logika Triggerów
+            if self.is_stream_live:
+                time_since_last = time.time() - self.last_clip_time
+                triggered = False
+                reason = ""
+
+                if time_since_last > self.cooldown_time:
+                    if self.current_chat_velocity > self.chat_threshold:
+                        triggered = True
+                        reason = f"CHAT ({self.current_chat_velocity:.1f}/s)"
+                    elif self.current_audio_level > self.audio_threshold:
+                        triggered = True
+                        reason = f"AUDIO ({self.current_audio_level})"
+
+                if triggered:
+                    self.log(f"🎬 WYKRYTO: {reason}")
+                    # Uruchomienie nagrywania w osobnym wątku, by nie blokować pętli
+                    threading.Thread(target=self._handle_recording, args=(reason,)).start()
+                    self.last_clip_time = time.time()
+
+            time.sleep(0.5)
+        self.log("Silnik zatrzymany.")
+
+if __name__ == "__main__":
+    print("Uruchom plik flux_gui.py, aby korzystać z programu!")

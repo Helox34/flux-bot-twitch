@@ -1,154 +1,133 @@
 import customtkinter as ctk
-import tkinter as tk
-from datetime import datetime
+import main  # Importujemy Twój silnik
 
-# Konfiguracja wstępna wyglądu
-ctk.set_appearance_mode("Dark")  # Tryb ciemny
-ctk.set_default_color_theme("dark-blue")  # Motyw kolorystyczny
+ctk.set_appearance_mode("Dark")
+ctk.set_default_color_theme("dark-blue")
 
 class FluxApp(ctk.CTk):
     def __init__(self):
         super().__init__()
+        self.engine = main.FluxEngine() # Inicjalizacja backendu
 
-        # Konfiguracja głównego okna
+        # --- GŁÓWNE OKNO ---
         self.title("Flux - Autonomous AI Streaming Producer")
-        self.geometry("1100x700")
-        
-        # Grid layout 1x2 (Sidebar + Main Content)
+        self.geometry("1000x650")
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
-        # === 1. SIDEBAR (Nawigacja) ===
-        self.sidebar_frame = ctk.CTkFrame(self, width=200, corner_radius=0)
-        self.sidebar_frame.grid(row=0, column=0, sticky="nsew")
-        self.sidebar_frame.grid_rowconfigure(5, weight=1)
-
-        # Logo / Tytuł
-        self.logo_label = ctk.CTkLabel(self.sidebar_frame, text="FLUX AI", font=ctk.CTkFont(size=24, weight="bold"))
-        self.logo_label.grid(row=0, column=0, padx=20, pady=(20, 10))
+        # --- SIDEBAR ---
+        self.sidebar = ctk.CTkFrame(self, width=200, corner_radius=0)
+        self.sidebar.grid(row=0, column=0, sticky="nsew")
         
-        # Przyciski nawigacyjne
-        self.btn_dashboard = ctk.CTkButton(self.sidebar_frame, text="Dashboard", command=self.show_dashboard)
-        self.btn_dashboard.grid(row=1, column=0, padx=20, pady=10)
+        ctk.CTkLabel(self.sidebar, text="FLUX AI", font=ctk.CTkFont(size=24, weight="bold")).pack(pady=(30,20))
         
-        self.btn_library = ctk.CTkButton(self.sidebar_frame, text="Biblioteka Klipów", command=self.show_library)
-        self.btn_library.grid(row=2, column=0, padx=20, pady=10)
+        ctk.CTkButton(self.sidebar, text="Dashboard", command=self.show_dashboard).pack(pady=10, padx=20)
+        ctk.CTkButton(self.sidebar, text="Ustawienia", command=self.show_settings).pack(pady=10, padx=20)
         
-        self.btn_settings = ctk.CTkButton(self.sidebar_frame, text="Konfiguracja AI", command=self.show_settings)
-        self.btn_settings.grid(row=3, column=0, padx=20, pady=10)
+        self.status_lbl = ctk.CTkLabel(self.sidebar, text="Silnik: OFF", text_color="gray")
+        self.status_lbl.pack(side="bottom", pady=20)
 
-        # Status u dołu sidebara
-        self.status_label = ctk.CTkLabel(self.sidebar_frame, text="Silnik: OFF", text_color="gray")
-        self.status_label.grid(row=6, column=0, padx=20, pady=20)
+        # --- RAMKA TREŚCI ---
+        self.content = ctk.CTkFrame(self, corner_radius=10)
+        self.content.grid(row=0, column=1, sticky="nsew", padx=20, pady=20)
 
-        # === 2. GŁÓWNY OBSZAR (Zmienna zawartość) ===
-        self.main_frame = ctk.CTkFrame(self, corner_radius=10)
-        self.main_frame.grid(row=0, column=1, sticky="nsew", padx=20, pady=20)
-
-        # Inicjalizacja widoku Dashboard
+        # Inicjalizacja widoku
         self.show_dashboard()
+        
+        # Bezpieczne zamykanie
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def show_dashboard(self):
-        self.clear_frame()
+        self.clear_content()
         
-        # Nagłówek
-        lbl = ctk.CTkLabel(self.main_frame, text="Live Monitoring", font=ctk.CTkFont(size=20, weight="bold"))
-        lbl.pack(pady=10, anchor="w", padx=20)
+        ctk.CTkLabel(self.content, text="Live Monitoring", font=("Arial", 20, "bold")).pack(pady=10, anchor="w", padx=20)
 
-        # Input URL
-        url_frame = ctk.CTkFrame(self.main_frame)
-        url_frame.pack(fill="x", padx=20, pady=10)
+        # Input + Start
+        top_frame = ctk.CTkFrame(self.content)
+        top_frame.pack(fill="x", padx=20, pady=10)
         
-        self.url_entry = ctk.CTkEntry(url_frame, placeholder_text="Wklej link do Twitch (np. twitch.tv/shroud)", width=400)
-        self.url_entry.pack(side="left", padx=10, pady=10)
+        self.entry_nick = ctk.CTkEntry(top_frame, placeholder_text="Nick Streamera (np. MrDzinold)", width=300)
+        self.entry_nick.pack(side="left", padx=10, pady=10)
         
-        self.start_btn = ctk.CTkButton(url_frame, text="START MONITORING", fg_color="green", hover_color="darkgreen", command=self.toggle_engine)
-        self.start_btn.pack(side="left", padx=10)
+        btn_txt = "STOP" if self.engine.is_running else "START"
+        btn_col = "red" if self.engine.is_running else "green"
+        self.btn_start = ctk.CTkButton(top_frame, text=btn_txt, fg_color=btn_col, command=self.toggle_engine)
+        self.btn_start.pack(side="left", padx=10)
 
-        # Sekcja statystyk na żywo (Symulacja wykresów)
-        stats_frame = ctk.CTkFrame(self.main_frame)
-        stats_frame.pack(fill="both", expand=True, padx=20, pady=10)
-
-        # Wskaźniki
-        self.create_metric_card(stats_frame, "Audio Level (dB)", "-45 dB", 0, 0)
-        self.create_metric_card(stats_frame, "Chat Velocity", "12 msg/s", 0, 1)
-        self.create_metric_card(stats_frame, "Loyalty Points", "1,250 mined", 0, 2)
-
-        # Konsola logów
-        log_lbl = ctk.CTkLabel(self.main_frame, text="System Logs:", anchor="w")
-        log_lbl.pack(fill="x", padx=20, pady=(10,0))
+        # Statystyki
+        stats_frame = ctk.CTkFrame(self.content)
+        stats_frame.pack(fill="x", padx=20, pady=10)
         
-        self.log_box = ctk.CTkTextbox(self.main_frame, height=150)
-        self.log_box.pack(fill="x", padx=20, pady=10)
-        self.log_box.insert("0.0", f"[{datetime.now().strftime('%H:%M:%S')}] System gotowy. Oczekiwanie na link...\n")
+        self.lbl_audio = self.create_stat(stats_frame, "Audio Level", "0", 0)
+        self.lbl_chat = self.create_stat(stats_frame, "Czat (msg/s)", "0.0", 1)
+        self.lbl_clips = self.create_stat(stats_frame, "Klipy", "0", 2)
+
+        # Logi
+        ctk.CTkLabel(self.content, text="Logi systemowe:", anchor="w").pack(fill="x", padx=20, pady=(10,0))
+        self.log_box = ctk.CTkTextbox(self.content, height=250)
+        self.log_box.pack(fill="both", expand=True, padx=20, pady=10)
 
     def show_settings(self):
-        self.clear_frame()
-        lbl = ctk.CTkLabel(self.main_frame, text="Konfiguracja AI & Triggerów", font=ctk.CTkFont(size=20, weight="bold"))
-        lbl.pack(pady=10, anchor="w", padx=20)
-
-        # Ustawienia Audio
-        self.create_slider_setting("Audio Spike Threshold (dB)", -20, -60, -35)
+        self.clear_content()
+        ctk.CTkLabel(self.content, text="Konfiguracja Czułości", font=("Arial", 20, "bold")).pack(pady=10, anchor="w", padx=20)
         
-        # Ustawienia Czat
-        self.create_slider_setting("Chat Spam Sensitivity (msg/s)", 5, 100, 30)
+        self.create_slider("Próg Audio (Krzyk)", 500, 10000, self.engine.audio_threshold, 
+                           lambda v: setattr(self.engine, 'audio_threshold', int(v)))
+                           
+        self.create_slider("Próg Czat (Spam)", 1, 50, self.engine.chat_threshold, 
+                           lambda v: setattr(self.engine, 'chat_threshold', float(v)))
+                           
+        self.create_slider("Długość klipu (s)", 10, 120, self.engine.record_duration, 
+                           lambda v: setattr(self.engine, 'record_duration', int(v)))
 
-        # Przełączniki
-        switch_frame = ctk.CTkFrame(self.main_frame)
-        switch_frame.pack(fill="x", padx=20, pady=20)
-        
-        ctk.CTkSwitch(switch_frame, text="Auto-Convert to 9:16 (TikTok Mode)").pack(anchor="w", padx=20, pady=10)
-        ctk.CTkSwitch(switch_frame, text="Generate Summaries (GPT-4)").pack(anchor="w", padx=20, pady=10)
-        ctk.CTkSwitch(switch_frame, text="Loyalty Mining (Auto-Click Bonus)").pack(anchor="w", padx=20, pady=10)
-
-    def show_library(self):
-        self.clear_frame()
-        lbl = ctk.CTkLabel(self.main_frame, text="Wygenerowane Klipy i Shorty", font=ctk.CTkFont(size=20, weight="bold"))
-        lbl.pack(pady=10, anchor="w", padx=20)
-        
-        # Lista (Placeholder)
-        scroll = ctk.CTkScrollableFrame(self.main_frame)
-        scroll.pack(fill="both", expand=True, padx=20, pady=10)
-
-        for i in range(5):
-            clip_frame = ctk.CTkFrame(scroll)
-            clip_frame.pack(fill="x", pady=5)
-            ctk.CTkLabel(clip_frame, text=f"Clip_2023-10-12_hero_play_{i}.mp4").pack(side="left", padx=10)
-            ctk.CTkButton(clip_frame, text="Otwórz", width=80).pack(side="right", padx=10, pady=5)
-            ctk.CTkButton(clip_frame, text="Upload TikTok", width=100, fg_color="purple").pack(side="right", padx=5, pady=5)
-
-    # Funkcje pomocnicze
-    def clear_frame(self):
-        for widget in self.main_frame.winfo_children():
-            widget.destroy()
-
-    def create_metric_card(self, parent, title, value, row, col):
-        card = ctk.CTkFrame(parent)
-        card.grid(row=row, column=col, padx=10, pady=10, sticky="nsew")
-        parent.grid_columnconfigure(col, weight=1)
-        
-        ctk.CTkLabel(card, text=title, font=("Arial", 12)).pack(pady=(10,0))
-        ctk.CTkLabel(card, text=value, font=("Arial", 24, "bold"), text_color="#3B8ED0").pack(pady=(5,10))
-
-    def create_slider_setting(self, title, min_val, max_val, default):
-        frame = ctk.CTkFrame(self.main_frame)
-        frame.pack(fill="x", padx=20, pady=10)
-        
-        ctk.CTkLabel(frame, text=title).pack(anchor="w", padx=10, pady=5)
-        slider = ctk.CTkSlider(frame, from_=min_val, to=max_val)
-        slider.set(default)
-        slider.pack(fill="x", padx=10, pady=(0, 10))
-
+    # --- LOGIKA ---
     def toggle_engine(self):
-        current_text = self.start_btn.cget("text")
-        if "START" in current_text:
-            self.start_btn.configure(text="STOP MONITORING", fg_color="red", hover_color="darkred")
-            self.status_label.configure(text="Silnik: ONLINE (Listening)", text_color="green")
-            self.log_box.insert("end", f"[{datetime.now().strftime('%H:%M:%S')}] Połączono z czatem. Analiza audio aktywna.\n")
+        if not self.engine.is_running:
+            nick = self.entry_nick.get()
+            if not nick: return
+            
+            self.engine.start(nick, self.update_log, self.update_stats)
+            self.btn_start.configure(text="STOP", fg_color="red")
+            self.status_lbl.configure(text=f"ONLINE: {nick}", text_color="green")
         else:
-            self.start_btn.configure(text="START MONITORING", fg_color="green", hover_color="darkgreen")
-            self.status_label.configure(text="Silnik: OFF", text_color="gray")
-            self.log_box.insert("end", f"[{datetime.now().strftime('%H:%M:%S')}] Zatrzymano monitoring.\n")
+            self.engine.stop()
+            self.btn_start.configure(text="START", fg_color="green")
+            self.status_lbl.configure(text="OFF", text_color="gray")
+
+    def update_log(self, msg):
+        if hasattr(self, 'log_box'):
+            self.log_box.insert("end", msg)
+            self.log_box.see("end")
+
+    def update_stats(self, audio, chat, clips):
+        if hasattr(self, 'lbl_audio'):
+            self.lbl_audio.configure(text=str(audio))
+            self.lbl_chat.configure(text=f"{chat:.1f}")
+            self.lbl_clips.configure(text=str(clips))
+
+    # --- POMOCNICZE UI ---
+    def clear_content(self):
+        for w in self.content.winfo_children(): w.destroy()
+
+    def create_stat(self, parent, title, val, col):
+        frame = ctk.CTkFrame(parent)
+        frame.pack(side="left", expand=True, fill="both", padx=5, pady=5)
+        ctk.CTkLabel(frame, text=title, font=("Arial", 12)).pack(pady=5)
+        lbl = ctk.CTkLabel(frame, text=val, font=("Arial", 24, "bold"), text_color="#1f6aa5")
+        lbl.pack(pady=5)
+        return lbl
+
+    def create_slider(self, title, min_v, max_v, default, cmd):
+        frame = ctk.CTkFrame(self.content)
+        frame.pack(fill="x", padx=20, pady=10)
+        ctk.CTkLabel(frame, text=title).pack(anchor="w", padx=10)
+        slider = ctk.CTkSlider(frame, from_=min_v, to=max_v, command=cmd)
+        slider.set(default)
+        slider.pack(fill="x", padx=10, pady=10)
+
+    def on_close(self):
+        self.engine.stop()
+        self.destroy()
 
 if __name__ == "__main__":
     app = FluxApp()
