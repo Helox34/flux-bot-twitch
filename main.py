@@ -1,94 +1,86 @@
 import requests
 import sys
+import subprocess
+import time
+import os
 
-# --- KONFIGURACJA ---
-# Wklej tutaj ponownie swoje dane (chyba że już je masz w pliku)
+# --- TWOJE DANE ---
 CLIENT_ID = '4uv95tg4zx45b0c98x3amhpr13fng3'       
 CLIENT_SECRET = 'o65r6v3s29akfpijrc75drcukfkwv7' 
 
 def get_twitch_access_token():
-    """Loguje się i pobiera token (przepustkę)."""
     url = 'https://id.twitch.tv/oauth2/token'
     params = {
-        'client_id': CLIENT_ID,
-        'client_secret': CLIENT_SECRET,
-        'grant_type': 'client_credentials'
+        'client_id': CLIENT_ID, 'client_secret': CLIENT_SECRET, 'grant_type': 'client_credentials'
     }
     try:
         response = requests.post(url, params=params)
-        data = response.json()
-        return data.get('access_token')
-    except Exception as e:
-        print(f"❌ Błąd logowania: {e}")
+        return response.json().get('access_token')
+    except:
         return None
 
 def get_user_id(nickname, token):
-    """Zamienia nick streamera (np. 'shroud') na jego ID liczbowe."""
-    url = 'https://api.twitch.tv/helix/users'
-    headers = {
-        'Client-ID': CLIENT_ID,
-        'Authorization': f'Bearer {token}'
-    }
-    params = {'login': nickname}
-    
-    response = requests.get(url, headers=headers, params=params)
+    headers = {'Client-ID': CLIENT_ID, 'Authorization': f'Bearer {token}'}
+    response = requests.get('https://api.twitch.tv/helix/users', headers=headers, params={'login': nickname})
     data = response.json()
-    
-    if data['data']:
-        return data['data'][0]['id'] # Zwracamy ID znalezionego użytkownika
-    else:
-        return None
+    return data['data'][0]['id'] if data['data'] else None
 
 def check_stream_status(user_id, token):
-    """Sprawdza, czy dany numer ID prowadzi teraz transmisję."""
-    url = 'https://api.twitch.tv/helix/streams'
-    headers = {
-        'Client-ID': CLIENT_ID,
-        'Authorization': f'Bearer {token}'
-    }
-    params = {'user_id': user_id}
-    
-    response = requests.get(url, headers=headers, params=params)
+    headers = {'Client-ID': CLIENT_ID, 'Authorization': f'Bearer {token}'}
+    response = requests.get('https://api.twitch.tv/helix/streams', headers=headers, params={'user_id': user_id})
     data = response.json()
-    
-    # Jeśli lista 'data' nie jest pusta, to znaczy, że stream trwa
     if data['data']:
-        stream_info = data['data'][0]
-        return True, stream_info
-    else:
-        return False, None
+        return True, data['data'][0]
+    return False, None
 
-# --- GŁÓWNA PĘTLA PROGRAMU ---
+def record_stream_sample(streamer_nick, duration=30):
+    """Nagrywa stream przez określoną liczbę sekund."""
+    print(f"\n🎥 Flux: Rozpoczynam nagrywanie {streamer_nick} na {duration} sekund...")
+    
+    filename = f"{streamer_nick}_test.mp4"
+    twitch_url = f"twitch.tv/{streamer_nick}"
+    
+    # Komenda uruchamiająca streamlink
+    # To tak, jakbyś wpisał w konsoli: streamlink twitch.tv/nick best -o plik.mp4
+    command = [
+        "streamlink",
+        twitch_url,
+        "best",             # Najlepsza jakość
+        "-o", filename,     # Nazwa pliku wyjściowego
+        "--force"           # Nadpisz plik, jeśli istnieje
+    ]
+    
+    try:
+        # Uruchamiamy proces w tle
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        
+        # Czekamy (nagrywamy)
+        time.sleep(duration)
+        
+        # Kończymy nagrywanie
+        print("🛑 Flux: Koniec czasu! Zatrzymywanie nagrywania...")
+        process.terminate()
+        
+        print(f"✅ Gotowe! Sprawdź plik: {filename} w folderze projektu.")
+        
+    except FileNotFoundError:
+        print("❌ Błąd: Nie znaleziono programu 'streamlink'. Upewnij się, że zainstalowałeś go przez pip.")
+
+# --- START ---
 if __name__ == "__main__":
-    print("🤖 Flux: Uruchamianie systemu...")
-    
-    # 1. Logowanie
+    print("🤖 Flux: System gotowy.")
     token = get_twitch_access_token()
-    if not token:
-        sys.exit() # Koniec programu, jeśli brak tokena
-
-    # 2. Pytamy użytkownika, kogo sprawdzić
-    target_streamer = input("\nPodaj nick streamera do sprawdzenia (np. xayoo_, izakooo): ")
     
-    # 3. Szukamy ID tego streamera
-    print(f"🔍 Szukam ID dla użytkownika {target_streamer}...")
-    user_id = get_user_id(target_streamer, token)
+    target = input("\nPodaj nick do nagrania (np. MelaPustelnik): ")
+    user_id = get_user_id(target, token)
     
     if user_id:
-        print(f"✅ Znaleziono ID: {user_id}")
-        
-        # 4. Sprawdzamy status
         is_live, info = check_stream_status(user_id, token)
-        
         if is_live:
-            print(f"\n🔴 {target_streamer} JEST ONLINE!")
-            print(f"Tytuł: {info['title']}")
-            print(f"Gra/Kategoria: {info['game_name']}")
-            print(f"Widzów: {info['viewer_count']}")
-            print("--- Tutaj w przyszłości Flux zacznie nagrywać ---")
+            print(f"🔴 {target} jest LIVE! (Widzów: {info['viewer_count']})")
+            # Uruchamiamy nagrywanie próbne
+            record_stream_sample(target)
         else:
-            print(f"\n⚪ {target_streamer} jest offline.")
-            print("Flux przechodzi w stan czuwania (na razie kończy pracę).")
-            
+            print(f"⚪ {target} jest offline.")
     else:
-        print(f"❌ Nie znaleziono użytkownika o nicku '{target_streamer}'. Sprawdź pisownię.")
+        print("❌ Nie znaleziono streamera.")
