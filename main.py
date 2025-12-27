@@ -1,86 +1,138 @@
-import requests
-import sys
-import subprocess
+import socket
+import threading
 import time
-import os
+import numpy as np
+import sounddevice as sd
+import sys
 
-# --- TWOJE DANE ---
-CLIENT_ID = '4uv95tg4zx45b0c98x3amhpr13fng3'       
-CLIENT_SECRET = 'o65r6v3s29akfpijrc75drcukfkwv7' 
+# --- KONFIGURACJA UŻYTKOWNIKA ---
+NICKNAME = 'justinfan123' # Anonimowy nick (wystarczy do odczytu czatu)
+TOKEN = 'oauth:twoj_token_tutaj' # Tu wpisz swój token, jeśli chcesz pisać (do odczytu czasem nie trzeba, ale warto dać)
+CHANNEL = 'mrzdinold' # Nick streamera (małymi literami!)
 
-def get_twitch_access_token():
-    url = 'https://id.twitch.tv/oauth2/token'
-    params = {
-        'client_id': CLIENT_ID, 'client_secret': CLIENT_SECRET, 'grant_type': 'client_credentials'
-    }
-    try:
-        response = requests.post(url, params=params)
-        return response.json().get('access_token')
-    except:
-        return None
+# --- PROGI CZUŁOŚCI (Możesz zmieniać) ---
+CHAT_THRESHOLD = 2.0     # Ile wiadomości na sekundę uznajemy za "dużo"?
+AUDIO_THRESHOLD = 15.0   # Jak głośno musi być? (skala orientacyjna)
 
-def get_user_id(nickname, token):
-    headers = {'Client-ID': CLIENT_ID, 'Authorization': f'Bearer {token}'}
-    response = requests.get('https://api.twitch.tv/helix/users', headers=headers, params={'login': nickname})
-    data = response.json()
-    return data['data'][0]['id'] if data['data'] else None
+# Zmienne współdzielone (dostępne dla wszystkich wątków)
+current_chat_velocity = 0.0
+current_audio_level = 0.0
+is_running = True
 
-def check_stream_status(user_id, token):
-    headers = {'Client-ID': CLIENT_ID, 'Authorization': f'Bearer {token}'}
-    response = requests.get('https://api.twitch.tv/helix/streams', headers=headers, params={'user_id': user_id})
-    data = response.json()
-    if data['data']:
-        return True, data['data'][0]
-    return False, None
+class ChatMonitor(threading.Thread):
+    def __init__(self, channel):
+        super().__init__()
+        self.channel = channel
+        self.messages_window = [] # Lista czasów nadejścia wiadomości
 
-def record_stream_sample(streamer_nick, duration=30):
-    """Nagrywa stream przez określoną liczbę sekund."""
-    print(f"\n🎥 Flux: Rozpoczynam nagrywanie {streamer_nick} na {duration} sekund...")
-    
-    filename = f"{streamer_nick}_test.mp4"
-    twitch_url = f"twitch.tv/{streamer_nick}"
-    
-    # Komenda uruchamiająca streamlink
-    # To tak, jakbyś wpisał w konsoli: streamlink twitch.tv/nick best -o plik.mp4
-    command = [
-        "streamlink",
-        twitch_url,
-        "best",             # Najlepsza jakość
-        "-o", filename,     # Nazwa pliku wyjściowego
-        "--force"           # Nadpisz plik, jeśli istnieje
-    ]
-    
-    try:
-        # Uruchamiamy proces w tle
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    def run(self):
+        global current_chat_velocity
+        server = 'irc.chat.twitch.tv'
+        port = 6667
+        sock = socket.socket()
         
-        # Czekamy (nagrywamy)
-        time.sleep(duration)
-        
-        # Kończymy nagrywanie
-        print("🛑 Flux: Koniec czasu! Zatrzymywanie nagrywania...")
-        process.terminate()
-        
-        print(f"✅ Gotowe! Sprawdź plik: {filename} w folderze projektu.")
-        
-    except FileNotFoundError:
-        print("❌ Błąd: Nie znaleziono programu 'streamlink'. Upewnij się, że zainstalowałeś go przez pip.")
+        try:
+            sock.connect((server, port))
+            sock.send(f"PASS {TOKEN}\n".encode('utf-8'))
+            sock.send(f"NICK {NICKNAME}\n".encode('utf-8'))
+            sock.send(f"JOIN #{self.channel}\n".encode('utf-8'))
+            
+            print(f"💬 Czat: Podłączono do #{self.channel}")
 
-# --- START ---
+            while is_running:
+                resp = sock.recv(2048).decode('utf-8')
+                
+                # Ping-Pong (żeby Twitch nas nie rozłączył)
+                if resp.startswith('PING'):
+                    sock.send("PONG\n".encode('utf-8'))
+                
+                elif "PRIVMSG" in resp:
+                    # Każda nowa wiadomość to znacznik czasu
+                    now = time.time()
+                    self.messages_window.append(now)
+                    
+                    # Usuwamy wiadomości starsze niż 5 sekund (okno czasowe)
+                    self.messages_window = [t for t in self.messages_window if now - t <= 5.0]
+                    
+                    # Obliczamy prędkość: liczba wiadomości / 5 sekund
+                    if len(self.messages_window) > 0:
+                        current_chat_velocity = len(self.messages_window) / 5.0
+                    else:
+                        current_chat_velocity = 0
+                        
+        except Exception as e:
+            print(f"❌ Błąd czatu: {e}")
+
+class AudioMonitor(threading.Thread):
+    def run(self):
+        global current_audio_level
+        
+        def callback(indata, frames, time, status):
+            global current_audio_level
+            if status:
+                print(status)
+            # Obliczamy głośność (RMS - Root Mean Square)
+            volume_norm = np.linalg.norm(indata) * 10
+            current_audio_level = int(volume_norm)
+
+        # Nasłuchujemy domyślnego urządzenia wejściowego (Mikrofon lub Stereo Mix)
+        try:
+            with sd.InputStream(callback=callback, channels=1):
+                while is_running:
+                    sd.sleep(100)
+        except Exception as e:
+            print(f"❌ Błąd audio: {e}")
+            print("Upewnij się, że masz podłączony mikrofon lub włączony Stereo Mix.")
+
+# --- GŁÓWNA PĘTLA ---
 if __name__ == "__main__":
-    print("🤖 Flux: System gotowy.")
-    token = get_twitch_access_token()
+    target_channel = input("Podaj nick streamera (np. mrzdinold): ").lower()
     
-    target = input("\nPodaj nick do nagrania (np. MelaPustelnik): ")
-    user_id = get_user_id(target, token)
+    # 1. Start wątku Audio
+    audio_thread = AudioMonitor()
+    audio_thread.daemon = True # Wątek zamknie się razem z programem
+    audio_thread.start()
     
-    if user_id:
-        is_live, info = check_stream_status(user_id, token)
-        if is_live:
-            print(f"🔴 {target} jest LIVE! (Widzów: {info['viewer_count']})")
-            # Uruchamiamy nagrywanie próbne
-            record_stream_sample(target)
-        else:
-            print(f"⚪ {target} jest offline.")
-    else:
-        print("❌ Nie znaleziono streamera.")
+    # 2. Start wątku Czat
+    chat_thread = ChatMonitor(target_channel)
+    chat_thread.daemon = True
+    chat_thread.start()
+
+    print("\n🧠 Flux Brain: Analiza rozpoczęta. Wciśnij Ctrl+C aby przerwać.\n")
+    print(f"Progi: Czat > {CHAT_THRESHOLD} msg/s | Audio > {AUDIO_THRESHOLD}")
+
+    try:
+        while True:
+            # Formatowanie wyjścia w jednej linii (\r nadpisuje linię)
+            status = "SPOKÓJ"
+            
+            # Logika decyzyjna
+            triggered = False
+            
+            if current_chat_velocity > CHAT_THRESHOLD:
+                status = "🔥 SZYBKI CZAT!"
+                triggered = True
+            
+            if current_audio_level > AUDIO_THRESHOLD:
+                status = "🔊 GŁOŚNO!"
+                triggered = True
+                
+            if current_chat_velocity > CHAT_THRESHOLD and current_audio_level > AUDIO_THRESHOLD:
+                 status = "🔥🔥🔥 OMEGA MOMENT!"
+                 triggered = True
+
+            # Wyświetlanie
+            output = f"\rCzat: {current_chat_velocity:.1f} msg/s | Audio: {current_audio_level:.1f} | Status: {status}"
+            
+            if triggered:
+                 # Tutaj w przyszłości będzie funkcja: save_buffer_to_disk()
+                 output += " -> 🎬 NAGRYWAM TERAZ! "
+            
+            sys.stdout.write(f"{output:<80}") # <80 czyści resztę linii
+            sys.stdout.flush()
+            
+            time.sleep(0.1)
+
+    except KeyboardInterrupt:
+        is_running = False
+        print("\n\n🛑 Zatrzymano.")
