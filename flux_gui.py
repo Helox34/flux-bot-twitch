@@ -20,7 +20,8 @@ class FluxApp(ctk.CTk):
         self.grid_rowconfigure(0, weight=1)
 
         self.log_history = "" 
-        self.status_labels = {} # Słownik do przechowywania etykiet statusu
+        self.status_labels = {} 
+        self.refresh_timer = None  # Zmienna do przechowywania czasu odświeżania
 
         # --- SIDEBAR ---
         self.sidebar = ctk.CTkFrame(self, width=200, corner_radius=0)
@@ -48,14 +49,22 @@ class FluxApp(ctk.CTk):
         self.show_dashboard()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
+        # --- AUTOSTART KOPARKI ---
+        # Uruchamiamy po 1 sekundzie, żeby interfejs zdążył się załadować
+        self.after(1000, self.start_miner)
+
     def start_miner(self):
+        # Zabezpieczenie, żeby nie odpalić dwa razy
+        if self.btn_miner.cget("state") == "disabled": return
+        
         self.miner.start()
         self.btn_miner.configure(text="KOPARKA DZIAŁA ✅", state="disabled", fg_color="green")
-        self.update_log("⛏️ Uruchomiono kopanie w tle.\n")
+        self.update_log("⛏️ AUTOSTART: Uruchomiono kopanie w tle.\n")
 
-    # --- NOWY WIDOK: LISTA ZE STATUSAMI ---
+    # --- ZAKŁADKA LISTY ---
     def show_streamer_list(self):
-        self.clear_content()
+        self.clear_content() # To zatrzyma stary timer (dzięki zmianie w clear_content)
+        
         ctk.CTkLabel(self.content, text="Zarządzanie Minerem", font=("Arial", 20, "bold")).pack(pady=10, anchor="w", padx=20)
         
         add_frame = ctk.CTkFrame(self.content)
@@ -64,7 +73,7 @@ class FluxApp(ctk.CTk):
         self.entry_streamer.pack(side="left", padx=10, pady=10)
         ctk.CTkButton(add_frame, text="DODAJ +", command=self.add_streamer_click, fg_color="green", width=100).pack(side="left", padx=10)
 
-        ctk.CTkLabel(self.content, text="Aktualnie farmieni (Odświeżam status...):", anchor="w").pack(fill="x", padx=20, pady=(10,0))
+        ctk.CTkLabel(self.content, text="Aktualnie farmieni (Auto-odświeżanie co 5 min):", anchor="w").pack(fill="x", padx=20, pady=(10,0))
         
         self.scroll_list = ctk.CTkScrollableFrame(self.content)
         self.scroll_list.pack(fill="both", expand=True, padx=20, pady=10)
@@ -72,8 +81,17 @@ class FluxApp(ctk.CTk):
         self.refresh_streamer_list_ui()
 
     def refresh_streamer_list_ui(self):
+        # Jeśli zmieniliśmy zakładkę i lista już nie istnieje, przerywamy
+        if not hasattr(self, 'scroll_list') or not self.scroll_list.winfo_exists():
+            return
+
+        # Anulujemy poprzedni timer, żeby nie mieć podwójnych odświeżeń
+        if self.refresh_timer:
+            self.after_cancel(self.refresh_timer)
+
+        # Czyszczenie listy
         for w in self.scroll_list.winfo_children(): w.destroy()
-        self.status_labels = {} # Reset słownika etykiet
+        self.status_labels = {}
 
         streamers = main.load_streamers()
         
@@ -81,27 +99,24 @@ class FluxApp(ctk.CTk):
             row = ctk.CTkFrame(self.scroll_list)
             row.pack(fill="x", pady=2, padx=5)
             
-            # Nazwa streamera
             ctk.CTkLabel(row, text=name, font=("Arial", 14, "bold")).pack(side="left", padx=10, pady=5)
             
-            # Etykieta statusu (domyślnie szara)
             lbl_status = ctk.CTkLabel(row, text="Sprawdzam...", text_color="gray", font=("Arial", 12))
             lbl_status.pack(side="left", padx=20)
-            self.status_labels[name] = lbl_status # Zapisujemy, żeby potem zaktualizować
+            self.status_labels[name] = lbl_status
 
             ctk.CTkButton(row, text="USUŃ ❌", width=60, fg_color="#AA0000", hover_color="#FF0000", 
                           command=lambda n=name: self.remove_streamer_click(n)).pack(side="right", padx=10, pady=5)
 
-        # Uruchamiamy sprawdzanie w tle, żeby nie zacięło okna
+        # Sprawdzanie statusów w tle
         threading.Thread(target=self._check_statuses_in_background, args=(streamers,), daemon=True).start()
 
+        # Ustawiamy KOLEJNE odświeżenie za 5 minut (300 000 milisekund)
+        self.refresh_timer = self.after(300000, self.refresh_streamer_list_ui)
+
     def _check_statuses_in_background(self, streamers):
-        """Sprawdza statusy jeden po drugim i aktualizuje interfejs"""
         for name in streamers:
             is_live = main.check_stream_status(name)
-            
-            # Aktualizacja GUI musi być ostrożna z wątków, ale w TKinter/CTK zazwyczaj działa
-            # jeśli robimy tylko configure.
             try:
                 if name in self.status_labels:
                     lbl = self.status_labels[name]
@@ -122,7 +137,7 @@ class FluxApp(ctk.CTk):
         main.remove_streamer_from_file(nick)
         self.refresh_streamer_list_ui()
 
-    # --- POZOSTAŁE FUNKCJE (BEZ ZMIAN) ---
+    # --- POZOSTAŁE FUNKCJE ---
     def show_dashboard(self):
         self.clear_content()
         ctk.CTkLabel(self.content, text="Live Monitoring", font=("Arial", 20, "bold")).pack(pady=10, anchor="w", padx=20)
@@ -217,6 +232,11 @@ class FluxApp(ctk.CTk):
         except Exception: pass
 
     def clear_content(self):
+        # WAŻNE: Jeśli wychodzimy z zakładki, zatrzymujemy licznik odświeżania, żeby nie mieliło w tle
+        if self.refresh_timer:
+            self.after_cancel(self.refresh_timer)
+            self.refresh_timer = None
+            
         for w in self.content.winfo_children(): w.destroy()
         self.lbl_audio = None; self.lbl_chat = None; self.lbl_clips = None; self.log_box = None; self.entry_nick = None
         self.scroll_list = None
