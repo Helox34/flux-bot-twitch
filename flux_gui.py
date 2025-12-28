@@ -11,6 +11,7 @@ class FluxApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.engine = main.FluxEngine()
+        self.miner = main.PointMiner()
 
         self.title("Flux - Autonomous AI Streaming Producer")
         self.geometry("1000x650")
@@ -24,10 +25,16 @@ class FluxApp(ctk.CTk):
         self.sidebar.grid(row=0, column=0, sticky="nsew")
         ctk.CTkLabel(self.sidebar, text="FLUX AI", font=ctk.CTkFont(size=24, weight="bold")).pack(pady=(30,20))
         
-        # Przyciski Menu
         ctk.CTkButton(self.sidebar, text="Dashboard", command=self.show_dashboard).pack(pady=10, padx=20)
-        ctk.CTkButton(self.sidebar, text="Biblioteka Klipów", command=self.show_library, fg_color="#555").pack(pady=10, padx=20) # Wyróżniłem kolorem
+        ctk.CTkButton(self.sidebar, text="Biblioteka Klipów", command=self.show_library, fg_color="#555").pack(pady=10, padx=20)
+        
+        # Nowy przycisk do zarządzania listą
+        ctk.CTkButton(self.sidebar, text="Lista Streamerów", command=self.show_streamer_list, fg_color="#444").pack(pady=10, padx=20)
+        
         ctk.CTkButton(self.sidebar, text="Ustawienia", command=self.show_settings).pack(pady=10, padx=20)
+        
+        self.btn_miner = ctk.CTkButton(self.sidebar, text="URUCHOM KOPARKĘ ⛏️", command=self.start_miner, fg_color="#6A0DAD", hover_color="#4B0082")
+        self.btn_miner.pack(pady=(30, 10), padx=20)
         
         self.status_lbl = ctk.CTkLabel(self.sidebar, text="Silnik: OFF", text_color="gray", font=("Arial", 12, "bold"))
         self.status_lbl.pack(side="bottom", pady=20)
@@ -40,6 +47,61 @@ class FluxApp(ctk.CTk):
 
         self.show_dashboard()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
+
+    def start_miner(self):
+        self.miner.start()
+        self.btn_miner.configure(text="KOPARKA DZIAŁA ✅", state="disabled", fg_color="green")
+        self.update_log("⛏️ Uruchomiono kopanie. Lista streamerów pobrana z ustawień.\n")
+
+    # --- NOWY WIDOK: EDYCJA LISTY STREAMERÓW ---
+    def show_streamer_list(self):
+        self.clear_content()
+        ctk.CTkLabel(self.content, text="Zarządzanie Minerem", font=("Arial", 20, "bold")).pack(pady=10, anchor="w", padx=20)
+        
+        # Sekcja dodawania
+        add_frame = ctk.CTkFrame(self.content)
+        add_frame.pack(fill="x", padx=20, pady=10)
+        
+        self.entry_streamer = ctk.CTkEntry(add_frame, placeholder_text="Wpisz nick np. Xayoo_", width=300)
+        self.entry_streamer.pack(side="left", padx=10, pady=10)
+        
+        ctk.CTkButton(add_frame, text="DODAJ +", command=self.add_streamer_click, fg_color="green", width=100).pack(side="left", padx=10)
+
+        ctk.CTkLabel(self.content, text="Aktualnie farmieni:", anchor="w").pack(fill="x", padx=20, pady=(10,0))
+        
+        # Lista przewijana
+        self.scroll_list = ctk.CTkScrollableFrame(self.content)
+        self.scroll_list.pack(fill="both", expand=True, padx=20, pady=10)
+        
+        self.refresh_streamer_list_ui()
+
+    def refresh_streamer_list_ui(self):
+        # Czyścimy widok
+        for w in self.scroll_list.winfo_children(): w.destroy()
+        
+        # Pobieramy listę z main.py (z pliku)
+        streamers = main.load_streamers()
+        
+        for name in streamers:
+            row = ctk.CTkFrame(self.scroll_list)
+            row.pack(fill="x", pady=2, padx=5)
+            
+            ctk.CTkLabel(row, text=name, font=("Arial", 14)).pack(side="left", padx=10, pady=5)
+            # Przycisk usuwania
+            ctk.CTkButton(row, text="USUŃ ❌", width=60, fg_color="#AA0000", hover_color="#FF0000", 
+                          command=lambda n=name: self.remove_streamer_click(n)).pack(side="right", padx=10, pady=5)
+
+    def add_streamer_click(self):
+        nick = self.entry_streamer.get().strip()
+        if nick:
+            main.add_streamer_to_file(nick)
+            self.entry_streamer.delete(0, "end")
+            self.refresh_streamer_list_ui()
+
+    def remove_streamer_click(self, nick):
+        main.remove_streamer_from_file(nick)
+        self.refresh_streamer_list_ui()
+    # -------------------------------------------
 
     def show_dashboard(self):
         self.clear_content()
@@ -72,21 +134,13 @@ class FluxApp(ctk.CTk):
         self.log_box.insert("0.0", self.log_history)
         self.log_box.see("end")
 
-    # --- NOWA FUNKCJA: BIBLIOTEKA ---
     def show_library(self):
         self.clear_content()
         ctk.CTkLabel(self.content, text="Twoje Nagrania", font=("Arial", 20, "bold")).pack(pady=10, anchor="w", padx=20)
-
-        # Kontener z paskiem przewijania
         scroll_frame = ctk.CTkScrollableFrame(self.content)
         scroll_frame.pack(fill="both", expand=True, padx=20, pady=10)
-
-        # Szukamy plików .mp4 zaczynających się od "clip_"
         files = [f for f in os.listdir(".") if f.endswith(".mp4") and f.startswith("clip_")]
-        
-        # Sortujemy od najnowszych (według daty modyfikacji)
         files.sort(key=lambda x: os.path.getmtime(x), reverse=True)
-
         if not files:
             ctk.CTkLabel(scroll_frame, text="Brak nagrań w folderze.", text_color="gray").pack(pady=20)
         else:
@@ -96,24 +150,14 @@ class FluxApp(ctk.CTk):
     def create_clip_row(self, parent, filename):
         row = ctk.CTkFrame(parent)
         row.pack(fill="x", pady=5, padx=5)
-        
-        # Ikona/Nazwa pliku
         ctk.CTkLabel(row, text="🎬 " + filename, font=("Arial", 12)).pack(side="left", padx=10, pady=10)
-        
-        # Rozmiar pliku w MB
         size_mb = os.path.getsize(filename) / (1024 * 1024)
         ctk.CTkLabel(row, text=f"{size_mb:.1f} MB", text_color="gray").pack(side="left", padx=20)
-
-        # Przycisk Otwórz
-        # Używamy lambda z domyślnym argumentem (f=filename), żeby każdy przycisk pamiętał swój plik
         ctk.CTkButton(row, text="ODTWÓRZ ▶️", width=100, command=lambda f=filename: self.open_file(f)).pack(side="right", padx=10, pady=5)
 
     def open_file(self, filename):
-        """Otwiera plik w domyślnym odtwarzaczu systemu Windows."""
-        try:
-            os.startfile(filename)
-        except Exception as e:
-            print(f"Błąd otwierania: {e}")
+        try: os.startfile(filename)
+        except Exception as e: print(f"Błąd otwierania: {e}")
 
     def show_settings(self):
         self.clear_content()
@@ -159,7 +203,8 @@ class FluxApp(ctk.CTk):
     def clear_content(self):
         for w in self.content.winfo_children(): w.destroy()
         self.lbl_audio = None; self.lbl_chat = None; self.lbl_clips = None; self.log_box = None; self.entry_nick = None
-
+        self.scroll_list = None
+        
     def create_stat(self, parent, title, val, col):
         frame = ctk.CTkFrame(parent)
         frame.pack(side="left", expand=True, fill="both", padx=5, pady=5)
