@@ -3,6 +3,7 @@ import main
 import os
 import subprocess
 import sys
+import threading
 
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("dark-blue")
@@ -19,18 +20,17 @@ class FluxApp(ctk.CTk):
         self.grid_rowconfigure(0, weight=1)
 
         self.log_history = "" 
+        self.status_labels = {} # Słownik do przechowywania etykiet statusu
 
         # --- SIDEBAR ---
         self.sidebar = ctk.CTkFrame(self, width=200, corner_radius=0)
         self.sidebar.grid(row=0, column=0, sticky="nsew")
         ctk.CTkLabel(self.sidebar, text="FLUX AI", font=ctk.CTkFont(size=24, weight="bold")).pack(pady=(30,20))
         
+        # Przyciski Menu
         ctk.CTkButton(self.sidebar, text="Dashboard", command=self.show_dashboard).pack(pady=10, padx=20)
         ctk.CTkButton(self.sidebar, text="Biblioteka Klipów", command=self.show_library, fg_color="#555").pack(pady=10, padx=20)
-        
-        # Nowy przycisk do zarządzania listą
         ctk.CTkButton(self.sidebar, text="Lista Streamerów", command=self.show_streamer_list, fg_color="#444").pack(pady=10, padx=20)
-        
         ctk.CTkButton(self.sidebar, text="Ustawienia", command=self.show_settings).pack(pady=10, padx=20)
         
         self.btn_miner = ctk.CTkButton(self.sidebar, text="URUCHOM KOPARKĘ ⛏️", command=self.start_miner, fg_color="#6A0DAD", hover_color="#4B0082")
@@ -51,45 +51,65 @@ class FluxApp(ctk.CTk):
     def start_miner(self):
         self.miner.start()
         self.btn_miner.configure(text="KOPARKA DZIAŁA ✅", state="disabled", fg_color="green")
-        self.update_log("⛏️ Uruchomiono kopanie. Lista streamerów pobrana z ustawień.\n")
+        self.update_log("⛏️ Uruchomiono kopanie w tle.\n")
 
-    # --- NOWY WIDOK: EDYCJA LISTY STREAMERÓW ---
+    # --- NOWY WIDOK: LISTA ZE STATUSAMI ---
     def show_streamer_list(self):
         self.clear_content()
         ctk.CTkLabel(self.content, text="Zarządzanie Minerem", font=("Arial", 20, "bold")).pack(pady=10, anchor="w", padx=20)
         
-        # Sekcja dodawania
         add_frame = ctk.CTkFrame(self.content)
         add_frame.pack(fill="x", padx=20, pady=10)
-        
         self.entry_streamer = ctk.CTkEntry(add_frame, placeholder_text="Wpisz nick np. Xayoo_", width=300)
         self.entry_streamer.pack(side="left", padx=10, pady=10)
-        
         ctk.CTkButton(add_frame, text="DODAJ +", command=self.add_streamer_click, fg_color="green", width=100).pack(side="left", padx=10)
 
-        ctk.CTkLabel(self.content, text="Aktualnie farmieni:", anchor="w").pack(fill="x", padx=20, pady=(10,0))
+        ctk.CTkLabel(self.content, text="Aktualnie farmieni (Odświeżam status...):", anchor="w").pack(fill="x", padx=20, pady=(10,0))
         
-        # Lista przewijana
         self.scroll_list = ctk.CTkScrollableFrame(self.content)
         self.scroll_list.pack(fill="both", expand=True, padx=20, pady=10)
         
         self.refresh_streamer_list_ui()
 
     def refresh_streamer_list_ui(self):
-        # Czyścimy widok
         for w in self.scroll_list.winfo_children(): w.destroy()
-        
-        # Pobieramy listę z main.py (z pliku)
+        self.status_labels = {} # Reset słownika etykiet
+
         streamers = main.load_streamers()
         
         for name in streamers:
             row = ctk.CTkFrame(self.scroll_list)
             row.pack(fill="x", pady=2, padx=5)
             
-            ctk.CTkLabel(row, text=name, font=("Arial", 14)).pack(side="left", padx=10, pady=5)
-            # Przycisk usuwania
+            # Nazwa streamera
+            ctk.CTkLabel(row, text=name, font=("Arial", 14, "bold")).pack(side="left", padx=10, pady=5)
+            
+            # Etykieta statusu (domyślnie szara)
+            lbl_status = ctk.CTkLabel(row, text="Sprawdzam...", text_color="gray", font=("Arial", 12))
+            lbl_status.pack(side="left", padx=20)
+            self.status_labels[name] = lbl_status # Zapisujemy, żeby potem zaktualizować
+
             ctk.CTkButton(row, text="USUŃ ❌", width=60, fg_color="#AA0000", hover_color="#FF0000", 
                           command=lambda n=name: self.remove_streamer_click(n)).pack(side="right", padx=10, pady=5)
+
+        # Uruchamiamy sprawdzanie w tle, żeby nie zacięło okna
+        threading.Thread(target=self._check_statuses_in_background, args=(streamers,), daemon=True).start()
+
+    def _check_statuses_in_background(self, streamers):
+        """Sprawdza statusy jeden po drugim i aktualizuje interfejs"""
+        for name in streamers:
+            is_live = main.check_stream_status(name)
+            
+            # Aktualizacja GUI musi być ostrożna z wątków, ale w TKinter/CTK zazwyczaj działa
+            # jeśli robimy tylko configure.
+            try:
+                if name in self.status_labels:
+                    lbl = self.status_labels[name]
+                    if is_live:
+                        lbl.configure(text="🟢 ONLINE", text_color="#00FF00")
+                    else:
+                        lbl.configure(text="🔴 OFFLINE", text_color="red")
+            except: pass
 
     def add_streamer_click(self):
         nick = self.entry_streamer.get().strip()
@@ -101,15 +121,13 @@ class FluxApp(ctk.CTk):
     def remove_streamer_click(self, nick):
         main.remove_streamer_from_file(nick)
         self.refresh_streamer_list_ui()
-    # -------------------------------------------
 
+    # --- POZOSTAŁE FUNKCJE (BEZ ZMIAN) ---
     def show_dashboard(self):
         self.clear_content()
         ctk.CTkLabel(self.content, text="Live Monitoring", font=("Arial", 20, "bold")).pack(pady=10, anchor="w", padx=20)
-
         top_frame = ctk.CTkFrame(self.content)
         top_frame.pack(fill="x", padx=20, pady=10)
-        
         if not self.engine.is_running:
             self.entry_nick = ctk.CTkEntry(top_frame, placeholder_text="Nick Streamera", width=300)
             self.entry_nick.pack(side="left", padx=10, pady=10)
@@ -121,13 +139,11 @@ class FluxApp(ctk.CTk):
             lbl.pack(side="left", padx=20, pady=10)
             self.btn_start = ctk.CTkButton(top_frame, text="ZAKOŃCZ", fg_color="red", command=self.toggle_engine)
             self.btn_start.pack(side="right", padx=20)
-
         stats_frame = ctk.CTkFrame(self.content)
         stats_frame.pack(fill="x", padx=20, pady=10)
         self.lbl_audio = self.create_stat(stats_frame, "Audio Level", "0", 0)
         self.lbl_chat = self.create_stat(stats_frame, "Czat (msg/s)", "0.0", 1)
         self.lbl_clips = self.create_stat(stats_frame, "Klipy", "0", 2)
-
         ctk.CTkLabel(self.content, text="Logi systemowe:", anchor="w").pack(fill="x", padx=20, pady=(10,0))
         self.log_box = ctk.CTkTextbox(self.content, height=250)
         self.log_box.pack(fill="both", expand=True, padx=20, pady=10)

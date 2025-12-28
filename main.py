@@ -9,7 +9,7 @@ import datetime
 import sys
 import requests
 import shutil
-import json  # Potrzebne do zapisywania listy
+import json
 
 # --- IMPORTY DLA MINERA ---
 from TwitchChannelPointsMiner import TwitchChannelPointsMiner
@@ -22,14 +22,11 @@ CLIENT_SECRET = 'o65r6v3s29akfpijrc75drcukfkwv7'
 USER_NICK = 'helox343' 
 USER_TOKEN = 'oauth:34hx48t13eomojbosd757cj4h5gfer'
 
-# Plik, w którym zapisujemy listę streamerów
 STREAMERS_FILE = "streamers_list.json"
-# Domyślna lista (jeśli plik nie istnieje)
 DEFAULT_STREAMERS = ["MrDzinold", "MelaPustelnik", "Diables", "Kasix", "Fernatka", "PAGO3", "IzakOOO"]
 
 # --- FUNKCJE OBSŁUGI LISTY STREAMERÓW ---
 def load_streamers():
-    """Wczytuje listę z pliku JSON. Jeśli brak pliku, tworzy go."""
     if not os.path.exists(STREAMERS_FILE):
         save_streamers(DEFAULT_STREAMERS)
         return DEFAULT_STREAMERS
@@ -40,7 +37,6 @@ def load_streamers():
         return DEFAULT_STREAMERS
 
 def save_streamers(lista):
-    """Zapisuje listę do pliku JSON."""
     with open(STREAMERS_FILE, 'w') as f:
         json.dump(lista, f)
 
@@ -59,6 +55,32 @@ def remove_streamer_from_file(nick):
         save_streamers(current)
         return True
     return False
+
+# --- NOWA FUNKCJA: SPRAWDZANIE STATUSU ONLINE/OFFLINE ---
+def get_temp_token():
+    """Pobiera szybki token tylko do sprawdzenia statusu"""
+    try:
+        url = "https://id.twitch.tv/oauth2/token"
+        params = {'client_id': CLIENT_ID, 'client_secret': CLIENT_SECRET, 'grant_type': 'client_credentials'}
+        r = requests.post(url, params=params)
+        return r.json().get('access_token')
+    except: return None
+
+def check_stream_status(user_login):
+    """Zwraca True jeśli Online, False jeśli Offline"""
+    token = get_temp_token()
+    if not token: return False
+    try:
+        url = "https://api.twitch.tv/helix/streams"
+        headers = {'Client-ID': CLIENT_ID, 'Authorization': f'Bearer {token}'}
+        params = {'user_login': user_login}
+        r = requests.get(url, headers=headers, params=params)
+        data = r.json().get('data')
+        if data and len(data) > 0:
+            return True # Jest live
+        return False # Offline
+    except:
+        return False
 
 # --- SILNIK FLUX ---
 class FluxEngine:
@@ -91,12 +113,8 @@ class FluxEngine:
             print(message)
 
     def _get_api_token(self):
-        try:
-            url = "https://id.twitch.tv/oauth2/token"
-            params = {'client_id': CLIENT_ID, 'client_secret': CLIENT_SECRET, 'grant_type': 'client_credentials'}
-            r = requests.post(url, params=params)
-            return r.json().get('access_token')
-        except: return None
+        # Używamy tej samej logiki co wyżej
+        return get_temp_token()
 
     def _verify_channel_exists(self, channel):
         token = self._get_api_token()
@@ -248,13 +266,10 @@ class FluxEngine:
             try: os.remove(self.dvr_filename)
             except: pass
 
-# --- KLASA MINERA ---
 class PointMiner:
     def __init__(self):
         self.is_mining = False
         clean_token = USER_TOKEN.replace("oauth:", "")
-        
-        # Inicjalizujemy bibliotekę
         self.miner = TwitchChannelPointsMiner(
             username=USER_NICK,
             password=clean_token,
@@ -265,10 +280,7 @@ class PointMiner:
     def start(self):
         if self.is_mining: return
         self.is_mining = True
-        
-        # Ładujemy aktualną listę z pliku przed startem
         targets = load_streamers()
-        
         t = threading.Thread(target=self._mine_process, args=(targets,))
         t.daemon = True
         t.start()
