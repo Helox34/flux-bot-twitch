@@ -6,6 +6,7 @@ import sys
 import threading
 import re 
 import tkinter as tk
+import telegram_bot
 
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("dark-blue")
@@ -106,6 +107,12 @@ class FluxApp(ctk.CTk):
 
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.after(2000, self.start_miner) 
+        
+        # --- START TELEGRAMA ---
+        print("🤖 Uruchamiam moduł Telegrama...")
+        telegram_bot.start_telegram_thread(self)
+        # ------------------------------------
+
 
     def start_miner(self):
         if self.btn_miner.cget("state") == "disabled": return
